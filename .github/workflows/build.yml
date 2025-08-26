@@ -393,31 +393,33 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SUS_SU=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
-      - name: Kernel Branding
+      - name: Branding Kernel
         run: |
           set -euo pipefail
-          cd "$CONFIG"
-
-          KVER=$(make kernelversion)
-          BRANCH=$(git -C ./common rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+          
+          # Определяем путь к common (где есть Makefile ядра)
+          KERNEL_DIR=./common
+          
+          KVER=$(make -sC "$KERNEL_DIR" kernelversion)
+          BRANCH=$(git -C "$KERNEL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
           ANDROID_VER=$(printf "%s" "$BRANCH" | grep -o 'android[0-9]\+' || true)
           ANDROID_VER=${ANDROID_VER:-androidXX}
-
+          
           BUILD_DATE="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"
-
+          
           echo "KBUILD_BUILD_TIMESTAMP=$BUILD_DATE" >> $GITHUB_ENV
           echo "KBUILD_BUILD_USER=@mr_vokintos" >> $GITHUB_ENV
           echo "KBUILD_BUILD_HOST=ci" >> $GITHUB_ENV
-
+          
           CUSTOM_SUFFIX="-$ANDROID_VER-@mr_vokintos"
-
-          if [ -x scripts/config ]; then
-            scripts/config --disable LOCALVERSION_AUTO || true
-            scripts/config --set-str LOCALVERSION "$CUSTOM_SUFFIX" || true
+          
+          if [ -x $KERNEL_DIR/scripts/config ]; then
+            $KERNEL_DIR/scripts/config --disable LOCALVERSION_AUTO || true
+            $KERNEL_DIR/scripts/config --set-str LOCALVERSION "$CUSTOM_SUFFIX" || true
           else
-            echo "CONFIG_LOCALVERSION=\"${CUSTOM_SUFFIX}\"" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_LOCALVERSION=\"${CUSTOM_SUFFIX}\"" >> $KERNEL_DIR/arch/arm64/configs/gki_defconfig
           fi
-
+          
           echo "KernelRelease target: ${KVER}${CUSTOM_SUFFIX}"
 
       - name: Build
