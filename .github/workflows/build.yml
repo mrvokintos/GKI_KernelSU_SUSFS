@@ -54,13 +54,32 @@ jobs:
           remove-cached-tools: 'false'   # Avoid unless confirmed safe
           verbose: 'true'                # Enable detailed logging
 
-      - name: SWAP
+      - name: Setup Swap
         run: |
-          sudo swapoff -a
-          sudo fallocate -l 18G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          set -euo pipefail
+
+          ZRAM_SIZE=$((8 * 1024 * 1024 * 1024))   # 8G zram
+          SWAPFILE_SIZE=16G
+          ZRAM_ALGO=zstd
+
+          sudo swapoff -a || true
+
+          if lsmod | grep -q zram || sudo modprobe zram; then
+            echo "$ZRAM_ALGO" | sudo tee /sys/block/zram0/comp_algorithm >/dev/null || true
+            echo "$ZRAM_SIZE" | sudo tee /sys/block/zram0/disksize >/dev/null
+            sudo mkswap /dev/zram0
+            sudo swapon -p 100 /dev/zram0
+          fi
+
+          if [ ! -f /swapfile ]; then
+            sudo fallocate -l $SWAPFILE_SIZE /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1G count=16
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+          fi
+          sudo swapon -p 10 /swapfile
+
+          sudo sysctl -w vm.swappiness=180
+          swapon --show
           free -h
           
       - name: Set CONFIG Environment Variable
@@ -373,32 +392,32 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SUS_SU=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
-      - name: Change Kernel Name
+      - name: Kernel Branding
         run: |
+          set -euo pipefail
           cd "$CONFIG"
 
           KVER=$(make kernelversion)
-          if [ -d "./common" ]; then
-              ANDROID_VER=$(basename "$(git -C ./common rev-parse --abbrev-ref HEAD 2>/dev/null || echo androidXX)")
-              ANDROID_VER=$(echo "$ANDROID_VER" | grep -o 'android[0-9]\+')
+          BRANCH=$(git -C ./common rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+          ANDROID_VER=$(printf "%s" "$BRANCH" | grep -o 'android[0-9]\+' || true)
+          ANDROID_VER=${ANDROID_VER:-androidXX}
+
+          BUILD_DATE="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"
+
+          echo "KBUILD_BUILD_TIMESTAMP=$BUILD_DATE" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_USER=@mr_vokintos" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_HOST=ci" >> $GITHUB_ENV
+
+          CUSTOM_SUFFIX="-$ANDROID_VER-@mr_vokintos"
+
+          if [ -x scripts/config ]; then
+            scripts/config --disable LOCALVERSION_AUTO || true
+            scripts/config --set-str LOCALVERSION "$CUSTOM_SUFFIX" || true
           else
-              ANDROID_VER="androidXX"
+            echo "CONFIG_LOCALVERSION=\"${CUSTOM_SUFFIX}\"" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
-          CUSTOM_NAME="$KVER-$ANDROID_VER-@mr_vokintos"
-          BUILD_DATE=$(date -u '+%a %b %d %H:%M:%S UTC %Y')
-
-          if [ -f "build/build.sh" ]; then
-              perl -pi -e 's/-dirty//' ./common/scripts/setlocalversion
-              perl -0777 -pi -e "s/(.*)(echo \"\$res\")/\$1echo \"$CUSTOM_NAME\"/s" ./common/scripts/setlocalversion
-              perl -pi -e "s{UTS_VERSION=.*}{UTS_VERSION=\"#1 SMP PREEMPT $BUILD_DATE\"}" ./common/scripts/mkcompile_h
-          else
-              perl -pi -e 's/-maybe-dirty//g' ./build/kernel/kleaf/impl/stamp.bzl
-              echo "CONFIG_LOCALVERSION=\"-$CUSTOM_NAME\"" >> ./common/arch/arm64/configs/gki_defconfig
-              perl -pi -e "s/build-timestamp = .*/build-timestamp = \"$BUILD_DATE\"/" ./common/init/Makefile
-              rm -rf ./common/android/abi_gki_protected_exports_*
-              perl -pi -e 's/^\s*\"protected_exports_list\"\s*:\s*\"android\/abi_gki_protected_exports_aarch64\",\s*$//;' ./common/BUILD.bazel
-          fi
+          echo "KernelRelease target: ${KVER}${CUSTOM_SUFFIX}"
 
       - name: Build
         run : |
