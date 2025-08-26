@@ -53,6 +53,15 @@ jobs:
           remove-swapfile: 'true'        # Frees ~4 GB
           remove-cached-tools: 'false'   # Avoid unless confirmed safe
           verbose: 'true'                # Enable detailed logging
+
+      - name: SWAP
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 18G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
           
       - name: Set CONFIG Environment Variable
         run: |
@@ -178,10 +187,6 @@ jobs:
           cd "$CONFIG"
       
           case "${{ inputs.kernelsu_variant }}" in
-            "WILD")
-              echo "Adding Wild KSU..."
-              curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash ${{ env.BRANCH }}
-              ;;
             "KSU")
               echo "Adding KernelSU Official..."
               curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash ${{ env.BRANCH }}
@@ -189,10 +194,6 @@ jobs:
             "NEXT")
               echo "Adding KernelSU Next..."
               curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash ${{ env.BRANCH }}
-              ;;
-            "MKSU")
-              echo "Adding KernelSU MKSU..."
-              curl -LSs "https://raw.githubusercontent.com/5ec1cff/KernelSU/main/kernel/setup.sh" | bash ${{ env.BRANCH }}
               ;;
           esac
           
@@ -212,10 +213,6 @@ jobs:
           cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
           
           case "${{ inputs.kernelsu_variant }}" in
-            "WILD")
-              echo "Applying SUSFS patches for Official KernelSU..."
-              cd ./Wild_KSU
-              ;;
             "KSU")
               echo "Applying SUSFS patches for Official KernelSU..."
               cd ./KernelSU
@@ -249,10 +246,6 @@ jobs:
               cp ../../kernel_patches/next/susfs_fix_patches/v1.5.9/fix_kernel_compat.c.patch ./
               patch -p1 --forward < fix_kernel_compat.c.patch
               ;;
-            "MKSU")
-              echo "Applying SUSFS patches for MKSU..."
-              cd ./KernelS
-              ;;
           esac
 
       - name: Getting KernelSU Version
@@ -261,11 +254,6 @@ jobs:
           cd "$CONFIG"
           
           case "${{ inputs.kernelsu_variant }}" in
-            "WILD")
-              echo "Applying SUSFS patches for Official KernelSU..."
-              cd ./Wild_KSU
-              BASE_VERSION=10200
-              ;;
             "KSU")
               echo "Applying SUSFS patches for Official KernelSU..."
               cd ./KernelSU
@@ -274,8 +262,6 @@ jobs:
             "NEXT")
               cd ./KernelSU-Next
               BASE_VERSION=10200
-              ;;
-            "MKSU")
               ;;
           esac
           
@@ -390,23 +376,28 @@ jobs:
       - name: Change Kernel Name
         run: |
           cd "$CONFIG"
+
+          KVER=$(make kernelversion)
+          if [ -d "./common" ]; then
+              ANDROID_VER=$(basename "$(git -C ./common rev-parse --abbrev-ref HEAD 2>/dev/null || echo androidXX)")
+              ANDROID_VER=$(echo "$ANDROID_VER" | grep -o 'android[0-9]\+')
+          else
+              ANDROID_VER="androidXX"
+          fi
+
+          CUSTOM_NAME="$KVER-$ANDROID_VER-@mr_vokintos"
+          BUILD_DATE=$(date -u '+%a %b %d %H:%M:%S UTC %Y')
+
           if [ -f "build/build.sh" ]; then
               perl -pi -e 's/-dirty//' ./common/scripts/setlocalversion
-              perl -0777 -pi -e 's/(.*)(echo "\$res")/$1echo "\$res-Next-v\$KSUVER-SUSFS-v1.5.9-Wild"/s' ./common/scripts/setlocalversion
-              perl -pi -e 's{UTS_VERSION="\$\(echo \$UTS_VERSION \$CONFIG_FLAGS \$TIMESTAMP \| cut -b -\$UTS_LEN\)"}{UTS_VERSION="#1 SMP PREEMPT Sun Apr 20 04:20:00 UTC 2025"}' ./common/scripts/mkcompile_h
+              perl -0777 -pi -e "s/(.*)(echo \"\$res\")/\$1echo \"$CUSTOM_NAME\"/s" ./common/scripts/setlocalversion
+              perl -pi -e "s{UTS_VERSION=.*}{UTS_VERSION=\"#1 SMP PREEMPT $BUILD_DATE\"}" ./common/scripts/mkcompile_h
           else
-              #Remove -maybe-dirty
               perl -pi -e 's/-maybe-dirty//g' ./build/kernel/kleaf/impl/stamp.bzl
-              
-              #Set Kernel Name
-              echo "CONFIG_LOCALVERSION=\"-NEXT-v$KSUVER-SUSFS-v1.5.9-Wild\"" >> ./common/arch/arm64/configs/gki_defconfig
-
-              #Set Kernel Timestamp
-              perl -pi -e 's/build-timestamp = \$\(or \$\(KBUILD_BUILD_TIMESTAMP\), \$\(build-timestamp-auto\)\)/build-timestamp = "Sun Apr 20 04:20:00 UTC 2025"/' ./common/init/Makefile
-
-              #Remove Abi Exports and Error
+              echo "CONFIG_LOCALVERSION=\"-$CUSTOM_NAME\"" >> ./common/arch/arm64/configs/gki_defconfig
+              perl -pi -e "s/build-timestamp = .*/build-timestamp = \"$BUILD_DATE\"/" ./common/init/Makefile
               rm -rf ./common/android/abi_gki_protected_exports_*
-              perl -pi -e 's/^\s*"protected_exports_list"\s*:\s*"android\/abi_gki_protected_exports_aarch64",\s*$//;' ./common/BUILD.bazel
+              perl -pi -e 's/^\s*\"protected_exports_list\"\s*:\s*\"android\/abi_gki_protected_exports_aarch64\",\s*$//;' ./common/BUILD.bazel
           fi
 
       - name: Build
@@ -416,9 +407,9 @@ jobs:
           cd "$CONFIG"
           echo "Building the kernel..."
           if [ -f "build/build.sh" ]; then
-            LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang" || exit 1
+            LTO=full BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang" || exit 1
           else
-            tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast --lto=thin //common:kernel_aarch64_dist || exit 1
+            tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast --lto=full //common:kernel_aarch64_dist || exit 1
           fi
           ccache --show-stats
 
