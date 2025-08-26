@@ -218,52 +218,53 @@ jobs:
           
       - name: Apply SUSFS Patches for KernelSU Variants
         run: |
+          set -euo pipefail
           echo "Changing to configuration directory: $CONFIG..."
           cd "$CONFIG"
-          
+
           echo "Applying SUSFS patches..."
-          
-          # Copy SUSFS patches
+
+          # Copy base SUSFS patch
           cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch ./common/
           cd common
-          patch -p1 --forward < 50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch
+          patch -p1 --forward < 50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch || echo "::warning::Failed to apply base patch"
           cd ..
           cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
           cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-          
+
+          apply_patch() {
+            local patch_file="$1"
+            if [ -f "$patch_file" ]; then
+              echo "::group::Applying $(basename "$patch_file")"
+              if patch -p1 --forward --dry-run < "$patch_file" >/dev/null 2>&1; then
+                patch -p1 --forward < "$patch_file" || true
+                echo "::notice::Applied $(basename "$patch_file")"
+              else
+                echo "::warning::Patch $(basename "$patch_file") does not apply cleanly — skipped"
+              fi
+              echo "::endgroup::"
+            else
+              echo "::warning::Patch file not found: $patch_file"
+            fi
+          }
+
           case "${{ inputs.kernelsu_variant }}" in
             "KSU")
               echo "Applying SUSFS patches for Official KernelSU..."
               cd ./KernelSU
               cp ../../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./
-              patch -p1 --forward < 10_enable_susfs_for_ksu.patch
+              apply_patch 10_enable_susfs_for_ksu.patch
               ;;
             "NEXT")
               echo "Applying SUSFS patches for KernelSU Next..."
               cd ./KernelSU-Next
               cp ../../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./
-              patch -p1 --forward < 10_enable_susfs_for_ksu.patch || true
-              
-              cp ../../kernel_patches/next/susfs_fix_patches/v1.5.9/fix_apk_sign.c.patch ./
-              patch -p1 --forward < fix_apk_sign.c.patch
-              
-              cp ../../kernel_patches/next/susfs_fix_patches/v1.5.9/fix_core_hook.c.patch ./
-              patch -p1 --forward --fuzz=3 < fix_core_hook.c.patch
-              
-              cp ../../kernel_patches/next/susfs_fix_patches/v1.5.9/fix_selinux.c.patch ./
-              patch -p1 --forward < fix_selinux.c.patch
-              
-              cp ../../kernel_patches/next/susfs_fix_patches/v1.5.9/fix_ksud.c.patch ./
-              patch -p1 --forward < fix_ksud.c.patch
+              apply_patch 10_enable_susfs_for_ksu.patch
 
-              cp ../../kernel_patches/next/susfs_fix_patches/v1.5.9/fix_rules.c.patch ./
-              patch -p1 --forward < fix_rules.c.patch
-
-              cp ../../kernel_patches/next/susfs_fix_patches/v1.5.9/fix_sucompat.c.patch ./
-              patch -p1 --forward < fix_sucompat.c.patch
-
-              cp ../../kernel_patches/next/susfs_fix_patches/v1.5.9/fix_kernel_compat.c.patch ./
-              patch -p1 --forward < fix_kernel_compat.c.patch
+              for f in ../../kernel_patches/next/susfs_fix_patches/v1.5.9/*.patch; do
+                cp "$f" ./
+                apply_patch "$(basename "$f")"
+              done
               ;;
           esac
 
